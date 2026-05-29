@@ -1,0 +1,43 @@
+spring:
+  application:
+    name: rabbit-channel-leak-demo
+  rabbitmq:
+    publisher-confirm-type: correlated
+    port: 5678
+  cloud:
+    function:
+      definition: consumer
+    stream:
+      bindings:
+        consumer-in-0:
+          destination: consumer
+          content-type: application/json
+          binder: rabbit
+          group: consumer-group
+        producer-out-0:
+          destination: producer
+          content-type: application/json
+          binder: rabbit
+      rabbit:
+        bindings:
+          consumer-in-0:
+            consumer:
+              acknowledge-mode: manual
+              prefetch: 200
+              autoBindDlq: true
+              republishToDlq: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: prometheus,health
+  metrics:
+    enable:
+      all: false
+      rabbitmq: true
+      spring.rabbitmq: true
+      jvm: true
+      process: true
+
+kind: Application

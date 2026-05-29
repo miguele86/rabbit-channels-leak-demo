@@ -1,0 +1,181 @@
+services:
+  rabbitmq-node1:
+    image: public.ecr.aws/docker/library/rabbitmq:3.12.12-management-alpine
+    hostname: rabbitmq-node1
+    container_name: rabbitmq-node1
+    ports:
+      - '5673:5672'
+      - '15673:15672'
+      - '15693:15692'
+    volumes:
+      - rabbitmq_node1_data:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit consumer_timeout 10000 -rabbitmq_prometheus return_per_object_metrics true"
+      RABBITMQ_ERLANG_COOKIE: 'SWQOKODSQALRPCLNMEQG'
+      RABBITMQ_NODENAME: rabbit@rabbitmq-node1
+    mem_limit: 1000m
+    memswap_limit: 1000m
+    cpus: 0.5
+    cpu_shares: 512
+    networks:
+      - rabbitmq_cluster
+
+  rabbitmq-node2:
+    image: public.ecr.aws/docker/library/rabbitmq:3.12.12-management-alpine
+    hostname: rabbitmq-node2
+    container_name: rabbitmq-node2
+    ports:
+      - '5674:5672'
+      - '15674:15672'
+      - '15694:15692'
+    volumes:
+      - rabbitmq_node2_data:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit consumer_timeout 10000 -rabbitmq_prometheus return_per_object_metrics true"
+      RABBITMQ_ERLANG_COOKIE: 'SWQOKODSQALRPCLNMEQG'
+      RABBITMQ_NODENAME: rabbit@rabbitmq-node2
+    mem_limit: 1000m
+    memswap_limit: 1000m
+    cpus: 0.5
+    cpu_shares: 512
+    networks:
+      - rabbitmq_cluster
+    depends_on:
+      - rabbitmq-node1
+
+  rabbitmq-node3:
+    image: public.ecr.aws/docker/library/rabbitmq:3.12.12-management-alpine
+    hostname: rabbitmq-node3
+    container_name: rabbitmq-node3
+    ports:
+      - '5675:5672'
+      - '15675:15672'
+      - '15695:15692'
+    volumes:
+      - rabbitmq_node3_data:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "-rabbit consumer_timeout 10000 -rabbitmq_prometheus return_per_object_metrics true"
+      RABBITMQ_ERLANG_COOKIE: 'SWQOKODSQALRPCLNMEQG'
+      RABBITMQ_NODENAME: rabbit@rabbitmq-node3
+    mem_limit: 1000m
+    memswap_limit: 1000m
+    cpus: 0.5
+    cpu_shares: 512
+    networks:
+      - rabbitmq_cluster
+    depends_on:
+      - rabbitmq-node1
+
+  haproxy:
+    image: public.ecr.aws/docker/library/haproxy:3.0-alpine
+    container_name: haproxy
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+      - '8404:8404'
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - rabbitmq_cluster
+    depends_on:
+      - rabbitmq-cluster-init
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    container_name: toxiproxy
+    ports:
+      - '5678:5678'
+      - '8474:8474'
+    volumes:
+      - ./toxiproxy.json:/etc/toxiproxy/config.json:ro
+    command: ["-config", "/etc/toxiproxy/config.json"]
+    networks:
+      - rabbitmq_cluster
+    depends_on:
+      - haproxy
+
+  rabbitmq-cluster-init:
+    image: public.ecr.aws/docker/library/rabbitmq:3.12.12-management-alpine
+    container_name: rabbitmq-cluster-init
+    depends_on:
+      - rabbitmq-node1
+      - rabbitmq-node2
+      - rabbitmq-node3
+    environment:
+      RABBITMQ_ERLANG_COOKIE: 'SWQOKODSQALRPCLNMEQG'
+    networks:
+      - rabbitmq_cluster
+    entrypoint: /bin/sh
+    command: >
+      -c "
+      sleep 15 &&
+      rabbitmq-plugins enable --node rabbit@rabbitmq-node1 rabbitmq_prometheus &&
+      rabbitmq-plugins enable --node rabbit@rabbitmq-node2 rabbitmq_prometheus &&
+      rabbitmq-plugins enable --node rabbit@rabbitmq-node3 rabbitmq_prometheus &&
+      rabbitmqctl -n rabbit@rabbitmq-node2 stop_app &&
+      rabbitmqctl -n rabbit@rabbitmq-node2 reset &&
+      rabbitmqctl -n rabbit@rabbitmq-node2 join_cluster rabbit@rabbitmq-node1 &&
+      rabbitmqctl -n rabbit@rabbitmq-node2 start_app &&
+      rabbitmqctl -n rabbit@rabbitmq-node3 stop_app &&
+      rabbitmqctl -n rabbit@rabbitmq-node3 reset &&
+      rabbitmqctl -n rabbit@rabbitmq-node3 join_cluster rabbit@rabbitmq-node1 &&
+      rabbitmqctl -n rabbit@rabbitmq-node3 start_app &&
+      rabbitmqctl -n rabbit@rabbitmq-node1 set_policy ha-all '.*' '{\"ha-mode\":\"all\",\"ha-sync-mode\":\"automatic\",\"queue-master-locator\":\"min-masters\"}' &&
+      echo 'RabbitMQ cluster configured successfully'
+      "
+    restart: "no"
+
+
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    container_name: prometheus
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - rabbitmq_cluster
+    depends_on:
+      - rabbitmq-cluster-init
+
+  grafana:
+    image: grafana/grafana:12.0.1
+    container_name: grafana
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    networks:
+      - rabbitmq_cluster
+    depends_on:
+      - prometheus
+
+networks:
+  rabbitmq_cluster:
+    driver: bridge
+
+volumes:
+  rabbitmq_node1_data:
+    driver: local
+  rabbitmq_node2_data:
+    driver: local
+  rabbitmq_node3_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local

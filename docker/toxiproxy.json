@@ -1,0 +1,20 @@
+[
+  {
+    "name": "rabbitmq",
+    "listen": "0.0.0.0:5678",
+    "upstream": "haproxy:5672",
+    "enabled": true,
+    "toxics": [
+      {
+        "name": "random_latency",
+        "type": "latency",
+        "stream": "downstream",
+        "toxicity": 1,
+        "attributes": {
+          "latency": 200,
+          "jitter": 50
+        }
+      }
+    ]
+  }
+]
